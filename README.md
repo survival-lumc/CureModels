@@ -10,6 +10,6 @@ Cure models have become increasingly popular over the last couple of decades. An
 
 Files for Section 2: "BMT-cure-short.R" for R code and "BMT-cure-short.pdf" for resulting pdf.
 
-Files for Section 3: "Cure-fup.qmd" for Quarto markdown file and "Cure-fup.pdf" for resulting pdf.
+Files for Section 3: "Cure-fup.qmd" for Quarto markdown file, "cure.bib" for bibtex file and "Cure-fup.pdf" for resulting pdf.
 
 File for Section 4: "Cure_model_simulation.R"
