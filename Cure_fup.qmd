@@ -1,0 +1,394 @@
+---
+title: "Lack of identifiability of plateaus"
+author:   
+  - Hein Putter
+  - Per Kragh Andersen
+pdf-engine: pdflatex
+execute: 
+  echo: false
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    code-summary: "Code"
+  pdf:
+    geometry: 
+      - top=30mm
+      - left=30mm
+    toc: false
+    number-sections: false
+    colorlinks: true
+editor: visual
+bibliography: cure.bib
+---
+
+# Introduction
+
+The presence of a latent sub-population that is cured of the disease of interest must be based on the tail of the time-to-event distribution. The most important practical limitation for establishing the presence of cure is that the tail of the time-to-event distribution is precisely the part of the distribution that is most difficult to estimate. Towards the end of follow-up, the numbers at risk are small, and therefore the estimate of the survival probabilities at the end of follow-up is very imprecise. The follow-up distribution is finite per definition. Looking at the tail of the Kaplan-Meier estimates and trying to say something about the behaviour of the survival function at infinity seems wishful thinking. The statistician can easily be misled, despite the fact that there are mathematically rigorous identifiability results about mixture cure models. The problem with these mathematical results is that they are valid under conditions that are impossible to test based on right-censored survival data.
+
+We will illustrate the difficulties with a simulated data set. Full code in R for all data generation and analyses performed is available in the Quarto markdown document that generated this document. The true underlying data generation mechanism will be revealed towards the end of this document. Based on the simulated data we follow theory from Chapter 4 of the classical book of Maller and Zhou (1996) to first test for the presence of a cure fraction, and subsequently test for sufficiency of follow-up to establish and reliably estimate this cure fraction.
+
+```{r, warning = FALSE}
+#| label: fig-KMs
+#| fig-cap: "Kaplan-Meier survival curves for two values of a binary covariate suggesting a plateau"
+#| fig-width: 5
+#| fig-height: 4
+
+library(survival) # version 3.5.5
+library(smcure) # version 2.1
+library(intsurv) # version 0.2.2
+library(simsurv) # version 1.0.0
+
+# We take as hazard h(x) = 0.2*cos((x-0.5)*pi/2) + 0.2
+h <- function(x) 0.2*cos((x-0.5)*pi/2) + 0.2
+H <- function(x) 0.2*sin((x-0.5)*pi/2)/(pi/2) + 0.2*x - 0.2*sin(-0.5*pi/2)/(pi/2)
+S <- function(x) exp(-H(x))
+
+# Use simsurv to generate data
+n <- 2500
+covs <- data.frame(id = 1:n) # needed for simsurv
+hazard <- function(t, x, betas)
+  0.2*cos((t-0.5)*pi/2) + 0.2 # no covariate effects for now
+
+set.seed(202402)
+
+# x = 0
+tt0 <- simsurv(hazard = hazard, x = covs, maxt = 12, interval = c(1e-8, 12.5))$eventtime
+cc <- runif(n, 2, 3) # uniform censoring between 2 and 3
+dfr0 <- data.frame(time = pmin(tt0, cc), status = as.numeric(tt0 <= cc), x = 0)
+
+# x = 1
+tt1 <- simsurv(hazard = hazard, x = covs, maxt = 12, interval = c(1e-8, 12.5))$eventtime
+cc <- runif(n, 2, 3) # uniform censoring between 2 and 3
+dfr1 <- data.frame(time = pmin(tt1, cc), status = as.numeric(tt1 <= cc), x = 1)
+
+# Together
+dfr <- rbind(dfr0, dfr1)
+KM <- survfit(Surv(time, status) ~ x, data = dfr)
+plot(KM, col = 1:2, lwd = 2,
+     xlab = "Time", ylab = "Survival")
+legend("topright", c("x = 0", "x = 1"), lwd = 2, col = 1:2, bty = "n")
+```
+
+@fig-KMs shows Kaplan-Meier survival curves for two values of a binary covariate $x$, based on 2500 observations from a true underlying survival curve $S(t \,|\, x=0)$ (black) and 2500 observations from a true underlying survival curve $S(t \,|\, x=1)$ (red). Both estimated survival curves seem to suggest a plateau, either with identical or different values around 55 to 60%. @fig-KMcens shows a plot of the estimated censoring distribution in the form of a reverse Kaplan-Meier estimate, assumed (correctly) to be common to $x=0$ and $x=1$. The plot strongly suggests a uniform censoring distribution between 2 and 3, which is in fact the true underlying censoring distribution.
+
+```{r}
+#| label: fig-KMcens
+#| fig-cap: "Reverse Kaplan-Meier estimate of the censoring distribution (assumed to be common to $x=0$ and $x=1$)"
+#| fig-width: 5
+#| fig-height: 4
+KMcens <- survfit(Surv(time, status==0) ~ 1, data = dfr)
+plot(KMcens, lwd = 2,
+     xlab = "Time", ylab = "Probability of being in follow-up")
+```
+
+```{r}
+dfr0 <- dfr0[order(dfr0$time), ]
+dfr1 <- dfr1[order(dfr1$time), ]
+t0max <- max(dfr0$time)
+t1max <- max(dfr1$time)
+KM0 <- survfit(Surv(time, status) ~ 1, data = dfr0)
+KM1 <- survfit(Surv(time, status) ~ 1, data = dfr1)
+p0 <- summary(KM0, times = t0max)$surv
+p1 <- summary(KM1, times = t1max)$surv
+```
+
+The first question to address is whether there is evidence of a plateau. The first thing then is to estimate the proportion of immunes in each group, the natural estimator being the Kaplan-Meier evaluated at the last observed time point, irrespective of whether it is an event or censoring time point, which we will denote by $\hat{p}_n$. These Kaplan-Meier estimates are `r format(round(p0, 3), nsmall=3)` for $x=0$ and `r format(round(p1, 3), nsmall=3)` for $x=1$. In what follows in this section, we will follow the theory of Maller and Zhou (1996) in testing for the presence of a plateau and sufficiency of follow-up. The theory is non-parametric, so we will apply it separately for $x=0$ and $x=1$. Maller and Zhou (1996) start out by testing $H_{01}: F(\tau_G) = 1$, in Section 4.2, where $F(\cdot)$ is the cumulative distribution function of the time-to-event, and $\tau_G$ is the end of follow-up. An alternative way of expressing this null hypothesis is $H_{01}: S(\tau_G) = 0$. If $H_{01}$ is rejected, this is seen as evidence for a plateau, and we would move on to test sufficiency of follow-up, to be addressed later.
+
+# Testing for the presence of a plateau
+
+The proposed test for $H_{01}$ is to reject $H_{01}$ if $\hat{p}_n > c_{0.05}$, where $\hat{p}_n$ as before is the Kaplan-Meier evaluated at the last observed time point (event or censored), and $c_{0.05}$ is the 5th percentile of the distribution of $\hat{p}_n$ calculated under $H_{01}$. To calculate the distribution of $\hat{p}_n$ under $H_{01}$ is difficult in general, it will depend on the unknown distributions $F$ and $G$ of the survival and censoring times. Maller and Zhou (1996) approximate this distribution under a range of distributions of $F$ and $G$, the percentiles of which are reported in a number of tables. We will not rely on their published tables, since their assumed censoring distributions are different from ours, but follow the reasoning of their procedure, and calculate the percentiles by simulation, separately under $x=0$ and $x=1$ (since we are going to test $H_{01}$ in each of the subgroups). We take the censoring distributions (correctly) to be uniform on (2, 3), and, following Maller and Zhou (1996) the event distribution exponential with rates to be estimated from the observed data (separately for $x=0$ and $x=1$). The assumption of underlying exponential distributions may well be incorrect, but recall that we have to work from $H_{01}$ anyway. Larger classes of survival models are of course possible, but preliminary analyses suggested that using Weibull distributions for instance do not change the results of our analyses in a major way. We used 1000 simulated data sets of size $n=2500$ (same as the actual data) with $x=0$ and with $x=1$, generating event data from exponential distributions with rates estimated from the data (`r format(round(sum(dfr0$status) / sum(dfr0$time), 3), nsmall=3)` for $x=0$ and `r format(round(sum(dfr1$status) / sum(dfr1$time), 3), nsmall=3)` for $x=1$) and applying independent uniform censoring on (2, 3). Within each of the simulated data sets we calculated and recorded $\hat{p}_n$. @fig-histp shows histograms of these simulated $\hat{p}_n$ under $H_{01}$, separately for $x=0$ (left) and $x=1$ (right), along with the estimated values from the actual data indicated with vertical lines.
+
+```{r, cache=FALSE}
+#| label: fig-histp
+#| fig-cap: "Histogram of the plateau estimates under $H_{01}$, for $x=0$ (left) and $x=1$ (right)"
+#| fig-width: 5
+#| fig-height: 4
+# Estimate the exponential rates for x=0 and x=1
+th0 <- sum(dfr0$status) / sum(dfr0$time)
+th1 <- sum(dfr1$status) / sum(dfr1$time)
+# Generate data and calculate \hat{p}_n
+# First x=0
+th <- th0
+M <- 1000
+pps <- rep(NA, M)
+for (m in 1:M) {
+  tt <- rexp(n, rate = th)
+  cc <- runif(n, 2, 3)
+  dfrm <- data.frame(time = pmin(tt, cc), status = as.numeric(tt <= cc))
+  KMm <- survfit(Surv(time, status) ~ 1, data = dfrm)
+  pps[m] <- summary(KMm, times = 3, extend = TRUE)$surv
+}
+pps0 <- pps
+# Then x=1
+th <- th1
+pps <- rep(NA, M)
+for (m in 1:M) {
+  tt <- rexp(n, rate = th)
+  cc <- runif(n, 2, 3)
+  dfrm <- data.frame(time = pmin(tt, cc), status = as.numeric(tt <= cc))
+  KMm <- survfit(Surv(time, status) ~ 1, data = dfrm)
+  pps[m] <- summary(KMm, times = 3, extend = TRUE)$surv
+}
+pps1 <- pps
+par(mfrow = c(1, 2))
+hist(pps0, xlim=c(min(pps0), p0), xlab = "Proportion immunes",
+     main = "x = 0")
+abline(v = p0, lty=3)
+hist(pps1, xlim=c(min(pps1), p1), xlab = "Proportion immunes",
+     main = "x = 1")
+abline(v = p1, lty=3)
+```
+
+The proportions of simulated $\hat{p}_n$ values under $H_{01}$ that are larger than the estimated $\hat{p}_n$ in the data are `r mean(pps0 > p0)` for $x=0$ and `r mean(pps1 > p1)` for $x=1$. It is clear that we would reject $H_{01}$, both for $x=0$ and $x=1$, with $p<0.001$.
+
+# Testing sufficiency of follow-up
+
+That leaves the second question: is there sufficient follow-up to establish the presence of these plateaus? This is addressed in Section 4.3 of Maller and Zhou (1996), by defining the second hypothesis $H_{02}: \tau_{F} \leq \tau_G$, and its complement $H_{02}^c: \tau_{F} > \tau_G$, where $\tau_F$ and $\tau_G$ are the right-hand side of the supports of $F$, the event-time distribution and of $G$, the censoring distribution. Rejecting $H_{02}^c$, and thereby accepting $H_{02}$ would imply that all of the *potential* event times are contained in the *potential* follow-up. Importantly, this is different from all of the *actual* event times are contained in the *actual* follow-up, which is the only thing that we can really say anything about. But it is what Maller and Zhou (1996), also on much of their subsequent work propagate. In our opinion this is the real flaw in this mathematical approach to the problem of testing sufficiency of follow-up; it suggests mathematical rigor in a setting where many of the underlying components $(\tau_F, \tau_G)$ are inherently unobservable. Maller and Zhou (1996) argue that we need to "use the information in the sample regarding the magnitude of $\tau_G - \tau_{F}$, which is effectively a measure of how far the large censored lifetimes (the potential immunes) lie from the main mass of the susceptibles' lifetime". Evidence for sufficient follow-up is to be found in the difference between the largest failure time $t_{\textrm{max}}$ and the largest uncensored failure time $t_{\textrm{max}}^*$. This leads to a test statistic for the null hypothesis $H_{02}^c$ of the form $\delta_n = t_{\textrm{max}} - t_{\textrm{max}}^*$. Maller and Zhou (1992) also consider $q_n = N_n / n$, with $N_n$ the number of uncensored $t_i$ in $(2 t_{\textrm{max}}^* - t_{\textrm{max}}, t_{\textrm{max}}])$. The test will then be to reject $H_{02}^c$ in favour of $H_{02}$ if $\delta_n$ or $q_n$ exceed certain critical values, and to accept $H_{02}^c$ otherwise. These critical value then depend on the distribution of the test statistics under $H_{02}^c$. Again, these distributions can be approximated by simulation.
+
+```{r}
+tmax0 <- max(dfr0$time)
+tmaxstar0 <- max(dfr0$time[dfr0$status == 1])
+intval0 <- c(2*tmaxstar0 - tmax0, tmaxstar0)
+delta0 <- tmax0 - tmaxstar0
+q0 <- mean(dfr0$time > intval0[1] & dfr0$time < intval0[2] & dfr0$status == 1)
+# And for x=1:
+tmax1 <- max(dfr1$time)
+tmaxstar1 <- max(dfr1$time[dfr1$status == 1])
+intval1 <- c(2*tmaxstar1 - tmax1, tmaxstar1)
+delta1 <- tmax1 - tmaxstar1
+q1 <- mean(dfr1$time > intval1[1] & dfr1$time < intval1[2] & dfr1$status == 1)
+```
+
+For $x=0$ we see in our data that $t_{\textrm{max}}$, $t_{\textrm{max}}^*$, $\delta_n$ and $q_n$ are given by `r format(round(tmax0, 3), nsmall=3)`, `r format(round(tmaxstar0, 3), nsmall=3)`, `r format(round(delta0, 3), nsmall=3)`, and `r format(round(q0, 3), nsmall=3)`, respectively. For $x=1$, the observed $t_{\textrm{max}}$, $t_{\textrm{max}}^*$ and $q_n$ are given by `r format(round(tmax1, 3), nsmall=3)`, `r format(round(tmaxstar1, 3), nsmall=3)`, `r format(round(delta1, 3), nsmall=3)`, and `r format(round(q1, 3), nsmall=3)`, respectively.
+
+We again use the same setting to approximate the null distributions (under $H_{02}^c$) for $\delta_n$ and $q_n$, so in essence the same generated data sets were used as before, but this time the test statistics $\delta_n$ and $q_n$ were calculated and stored for each generated data sets (separately for $x=0$ and $x=1$).
+
+```{r, cache=TRUE}
+#| label: fig-histdelta
+#| fig-cap: "Histogram of $d_n$ under $H_{02}^c$, for $x=0$ (left) and $x=1$ (right)"
+#| fig-width: 5
+#| fig-height: 4
+# Generate data and calculate delta and q under H02c, so
+# with events potentially occurring after last follow-up time.
+# First x=0
+th <- th0
+deltas <- qs <- rep(NA, M)
+for (m in 1:M) {
+  tt <- rexp(n, rate = th)
+  cc <- runif(n, 2, 3)
+  dfrm <- data.frame(time = pmin(tt, cc), status = as.numeric(tt <= cc))
+  tmax <- max(dfrm$time)
+  tmaxstar <- max(dfrm$time[dfrm$status == 1])
+  deltas[m] <- tmax - tmaxstar
+  intval <- c(2*tmaxstar - tmax, tmaxstar)
+  qs[m] <- mean(dfrm$time > intval[1] & dfrm$time < intval[2] & dfrm$status == 1)
+}
+qs0 <- qs
+deltas0 <- deltas
+# Then x=1
+th <- th1
+deltas <- qs <- rep(NA, M)
+for (m in 1:M) {
+  tt <- rexp(n, rate = th)
+  cc <- runif(n, 2, 3)
+  dfrm <- data.frame(time = pmin(tt, cc), status = as.numeric(tt <= cc))
+  tmax <- max(dfrm$time)
+  tmaxstar <- max(dfrm$time[dfrm$status == 1])
+  deltas[m] <- tmax - tmaxstar
+  intval <- c(2*tmaxstar - tmax, tmaxstar)
+  qs[m] <- mean(dfrm$time > intval[1] & dfrm$time < intval[2] & dfrm$status == 1)
+}
+qs1 <- qs
+deltas1 <- deltas
+
+par(mfrow = c(1, 2))
+hist(deltas0, xlim = c(0, delta0),
+     xlab = "delta", main = "x = 0")
+abline(v = delta0, lty=3)
+hist(deltas1, xlim = c(0, delta1),
+     xlab = "delta", main = "x = 1")
+abline(v = delta1, lty=3)
+```
+
+```{r, cache=TRUE}
+#| label: fig-histq
+#| fig-cap: "Histogram of $q_n$ under $H_{02}^c$, for $x=0$ (left) and $x=1$ (right)"
+#| fig-width: 5
+#| fig-height: 4
+par(mfrow = c(1, 2))
+hist(qs0, xlim = c(0, q0),
+     xlab = "q", main = "x = 0")
+abline(v = q0, lty=3)
+hist(qs1, xlim = c(0, q1),
+     xlab = "q", main = "x = 1")
+abline(v = q1, lty=3)
+```
+
+The resulting histograms are shown in @fig-histdelta and @fig-histq. It is clear that both for $x=0$ and $x=1$, the estimated values obtained from the data are completely outside the histogram of the values generated under $H_{02}^c$, again leading us to the clear conclusion that follow-up is sufficient to establish and reliably estimate the plateaus.
+
+```{r, include=FALSE}
+# Fit with smcure (replaced by cox_cure below, which gives same results but is quicker)
+# curefit <- smcure(formula = Surv(time, status) ~ x, 
+#                   cureform = ~ x, data = dfr, 
+#                   model = "ph", Var = TRUE)
+# b <- curefit$logistfit$coefficients
+# b
+
+# Fit with cox_cure from intsurv package
+curefit <- cox_cure(surv_formula = ~ x, cure_formula = ~ x,
+                     time = time, event = status, data = dfr,
+                     bootstrap = 100)
+curefit
+b <- coef(curefit)$cure
+b
+```
+
+# Establishing cure? The true underlying data generating mechanism
+
+Fitting a mixture cure model using {\textsf{smcure}} leads to a cure model with estimated plateaus of `r format(round(1 - plogis(b[1]), 3), nsmall = 3)` for $x=0$ and `r format(round(1 - plogis(b[1] + b[2]), 3), nsmall = 3)` for $x=1$.
+
+Results are in complete accordance with the plateaus seen by the Kaplan-Meiers, so together with the overwhelming evidence that both for $x=0$ and $x=1$ there is a plateau, and that we have sufficient follow-up to establish this and estimate its proportion, we can be quite confident about these results.
+
+Or can we? Time to reveal the true nature of the data that we just generated. The true time-to-event distributions for $x=0$ and $x=1$ are the same. @fig-truth shows the true underlying hazard (left) and the true underlying survival function (right). The hazard is a sine wave function, periodically close to 0, around $t=2.5, 6.5, 10.5$ etcetera. The true underlying survival function actually goes to zero as time goes to infinity, so in reality there is no proportion cured at all.
+
+```{r}
+#| label: fig-truth
+#| fig-cap: "The true underlying hazard (left) and the true underlying survival function (right)"
+#| fig-width: 5
+#| fig-height: 4
+xseq <- seq(0, 12, by=0.01)
+par(mfrow = c(1, 2))
+# Plot of the true underlying hazard curve
+plot(xseq, h(xseq), type="l", lwd=2,
+     xlab="Time", ylab="Hazard")
+# And the survival curve
+S <- function(x) exp(-H(x))
+plot(xseq, S(xseq), type="l", lwd=2, ylim=c(0, 1),
+     xlab="Time", ylab="Survival")
+```
+
+```{r}
+#| label: fig-KMs67
+#| fig-cap: "Kaplan-Meier survival curves for x=0 and x=1,
+#| uniform censoring on (6, 7)"
+#| fig-width: 5
+#| fig-height: 4
+# Censoring between 6 and 7
+cc <- runif(2*n, 6, 7) # uniform censoring on (6, 7)
+cc0 <- cc[1:n]; cc1 <- cc[(n+1):(2*n)]
+# x = 0
+dfr0 <- data.frame(time = pmin(tt0, cc0), status = as.numeric(tt0 <= cc0), x = 0)
+# x = 1
+dfr1 <- data.frame(time = pmin(tt1, cc1), status = as.numeric(tt1 <= cc1), x = 1)
+# Together
+dfr <- rbind(dfr0, dfr1)
+KM <- survfit(Surv(time, status) ~ x, data = dfr)
+plot(KM, col = 1:2, lwd = 2,
+     xlab = "Time", ylab = "Survival")
+legend("topright", c("x = 0", "x = 1"), lwd = 2, col = 1:2, bty = "n")
+```
+
+```{r, include=FALSE}
+# Fit with smcure (replaced by cox_cure below, which gives same results but is quicker)
+# curefit <- smcure(formula = Surv(time, status) ~ x, 
+#                   cureform = ~ x, data = dfr, 
+#                   model = "ph", Var = TRUE)
+# b <- curefit$logistfit$coefficients
+# b
+
+# Fit with cox_cure from intsurv package
+curefit <- cox_cure(surv_formula = ~ x, cure_formula = ~ x,
+                     time = time, event = status, data = dfr,
+                     bootstrap = 100)
+curefit
+b <- coef(curefit)$cure
+b
+```
+
+If we use the same uncensored data leading to @fig-KMs with uniform censoring on $(2, 3)$, and instead change the censoring interval to $(6, 7)$, this leads to the Kaplan-Meier estimates for $x=0$ and $x=1$ as shown in @fig-KMs67. This time a plateau around 25% is visible. Checking the existence of a non-zero plateau and sufficiency of follow-up using the methods of Maller and Zhou (1996) again leads us to be confident about these results, except for the sufficiency of follow-up for $x=1$. Fitting a cure model to this data gives estimated plateaus of `r format(round(1 - plogis(b[1]), 3), nsmall = 3)` for $x=0$ and `r format(round(1 - plogis(b[1] + b[2]), 3), nsmall = 3)` for $x=1$. Again we are misled about the existence of a plateau.
+
+```{r, include = FALSE}
+tmax0 <- max(dfr0$time)
+tmaxstar0 <- max(dfr0$time[dfr0$status == 1])
+intval0 <- c(2*tmaxstar0 - tmax0, tmaxstar0)
+delta0 <- tmax0 - tmaxstar0
+q0 <- mean(dfr0$time > intval0[1] & dfr0$time < intval0[2] & dfr0$status == 1)
+# And for x=1:
+tmax1 <- max(dfr1$time)
+tmaxstar1 <- max(dfr1$time[dfr1$status == 1])
+intval1 <- c(2*tmaxstar1 - tmax1, tmaxstar1)
+delta1 <- tmax1 - tmaxstar1
+q1 <- mean(dfr1$time > intval1[1] & dfr1$time < intval1[2] & dfr1$status == 1)
+
+tmax0
+tmaxstar0
+delta0
+q0
+tmax1
+tmaxstar1
+delta1
+q1
+```
+
+```{r, cache=FALSE, include=FALSE}
+#| label: fig-histdelta67
+#| fig-cap: "Histogram of $d_n$ under $H_{02}^c$, for $x=0$ (left) and $x=1$ (right)"
+#| fig-width: 5
+#| fig-height: 4
+# Generate data and calculate delta and q under H02c, so
+# with events potentially occurring after last follow-up time.
+# First x=0
+th0 <- sum(dfr0$status) / sum(dfr0$time)
+th1 <- sum(dfr1$status) / sum(dfr1$time)
+th <- th0
+deltas <- qs <- rep(NA, M)
+for (m in 1:M) {
+  tt <- rexp(n, rate = th)
+  cc <- runif(n, 2, 3)
+  dfrm <- data.frame(time = pmin(tt, cc), status = as.numeric(tt <= cc))
+  tmax <- max(dfrm$time)
+  tmaxstar <- max(dfrm$time[dfrm$status == 1])
+  deltas[m] <- tmax - tmaxstar
+  intval <- c(2*tmaxstar - tmax, tmaxstar)
+  qs[m] <- mean(dfrm$time > intval[1] & dfrm$time < intval[2] & dfrm$status == 1)
+}
+qs0 <- qs
+deltas0 <- deltas
+# Then x=1
+th <- th1
+deltas <- qs <- rep(NA, M)
+for (m in 1:M) {
+  tt <- rexp(n, rate = th)
+  cc <- runif(n, 2, 3)
+  dfrm <- data.frame(time = pmin(tt, cc), status = as.numeric(tt <= cc))
+  tmax <- max(dfrm$time)
+  tmaxstar <- max(dfrm$time[dfrm$status == 1])
+  deltas[m] <- tmax - tmaxstar
+  intval <- c(2*tmaxstar - tmax, tmaxstar)
+  qs[m] <- mean(dfrm$time > intval[1] & dfrm$time < intval[2] & dfrm$status == 1)
+}
+qs1 <- qs
+deltas1 <- deltas
+
+mean(deltas0 >= delta0)
+mean(deltas1 >= delta1)
+par(mfrow = c(1, 2))
+hist(deltas0, xlim = c(0, delta0),
+     xlab = "delta", main = "x = 0")
+abline(v = delta0, lty=3)
+hist(deltas1, xlim = c(0, delta1),
+     xlab = "delta", main = "x = 1")
+abline(v = delta1, lty=3)
+
+mean(qs0 >= q0)
+mean(qs1 >= q1)
+par(mfrow = c(1, 2))
+hist(qs0, xlim = c(0, q0),
+     xlab = "q", main = "x = 0")
+abline(v = q0, lty=3)
+hist(qs1, xlim = c(0, q1),
+     xlab = "q", main = "x = 1")
+abline(v = q1, lty=3)
+```
+
